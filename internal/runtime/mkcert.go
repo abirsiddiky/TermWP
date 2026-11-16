@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"termwp/internal/config"
 	"termwp/internal/ui"
@@ -42,9 +43,15 @@ func (m *MkcertManager) InstallCA() error {
 	}
 
 	cmd := exec.Command(config.MkcertPath(), "-install")
+	cmd.Env = append(os.Environ(), "TRUST_STORES=system,nss")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("mkcert -install failed: %s (%w)", string(output), err)
+		outStr := string(output)
+		if strings.Contains(outStr, "The local CA is already installed in the system trust store") ||
+			strings.Contains(outStr, "installed in the system trust store") {
+			return nil
+		}
+		return fmt.Errorf("mkcert -install failed: %s (%w)", strings.TrimSpace(outStr), err)
 	}
 	return nil
 }
@@ -56,13 +63,16 @@ func (m *MkcertManager) UninstallCA() error {
 	}
 
 	cmd := exec.Command(config.MkcertPath(), "-uninstall")
+	cmd.Env = append(os.Environ(), "TRUST_STORES=system,nss")
 	return cmd.Run()
 }
 
 // GenerateSiteCert generates a trusted TLS certificate for domain and wildcard *.domain.
 func (m *MkcertManager) GenerateSiteCert(domain string) (certPath, keyPath string, err error) {
-	if err := m.InstallCA(); err != nil {
-		return "", "", err
+	if !m.CheckCAInstalled() {
+		if err := m.InstallCA(); err != nil {
+			return "", "", err
+		}
 	}
 
 	certPath = filepath.Join(config.CertsDir(), fmt.Sprintf("%s.pem", domain))
@@ -76,6 +86,7 @@ func (m *MkcertManager) GenerateSiteCert(domain string) (certPath, keyPath strin
 		"-key-file", keyPath,
 		domain, wildcard, "localhost", "127.0.0.1",
 	)
+	cmd.Env = append(os.Environ(), "TRUST_STORES=system,nss")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -100,11 +111,12 @@ func (m *MkcertManager) CheckCAInstalled() bool {
 		return false
 	}
 	cmd := exec.Command(config.MkcertPath(), "-CAROOT")
+	cmd.Env = append(os.Environ(), "TRUST_STORES=system,nss")
 	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
-	caRoot := filepath.Clean(string(out))
+	caRoot := strings.TrimSpace(string(out))
 	rootCert := filepath.Join(caRoot, "rootCA.pem")
 	_, err = os.Stat(rootCert)
 	return err == nil

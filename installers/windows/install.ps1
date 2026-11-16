@@ -134,7 +134,7 @@ Install-Component "PHP 8.3.17" "https://windows.php.net/downloads/releases/archi
 Install-Component "PHP 8.4.4" "https://windows.php.net/downloads/releases/archives/php-8.4.4-nts-Win32-vs17-x64.zip" "php-8.4.4-nts.zip" (Join-Path $RuntimeDir "php\8.4") 0
 
 # PHP 8.5
-Install-Component "PHP 8.5-dev" "https://windows.php.net/downloads/snaps/master/latest/php-master-nts-windows-vs17-x64.zip" "php-8.5-dev.zip" (Join-Path $RuntimeDir "php\8.5") 0
+Install-Component "PHP 8.5" "https://windows.php.net/downloads/qa/php-8.5.13RC1-nts-Win32-vs17-x64.zip" "php-8.5.13RC1-nts.zip" (Join-Path $RuntimeDir "php\8.5") 0
 
 # WP-CLI
 Install-Component "WP-CLI" "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar" "wp-cli.phar" $ToolsDir 0

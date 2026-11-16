@@ -88,7 +88,63 @@ func (m *NginxManager) EnsureMasterConfig() error {
 	logsDir := filepath.ToSlash(config.LogsDir())
 	sitesDir := filepath.ToSlash(config.NginxSitesConfDir())
 	tempDir := filepath.ToSlash(filepath.Join(config.RuntimeDir(), "nginx", "temp"))
+
+	// Create all temp directories needed by nginx
 	_ = os.MkdirAll(tempDir, 0755)
+	_ = os.MkdirAll(filepath.Join(config.RuntimeDir(), "nginx", "temp", "client_body"), 0755)
+	_ = os.MkdirAll(filepath.Join(config.RuntimeDir(), "nginx", "temp", "proxy"), 0755)
+	_ = os.MkdirAll(filepath.Join(config.RuntimeDir(), "nginx", "temp", "fastcgi"), 0755)
+	_ = os.MkdirAll(filepath.Join(config.RuntimeDir(), "nginx", "temp", "uwsgi"), 0755)
+	_ = os.MkdirAll(filepath.Join(config.RuntimeDir(), "nginx", "temp", "scgi"), 0755)
+
+	// Copy standard configuration assets from shipping nginx installation if available
+	shippingConfDir := filepath.Join(config.RuntimeDir(), "nginx", "conf")
+	if entries, err := os.ReadDir(shippingConfDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || entry.Name() == "nginx.conf" {
+				continue
+			}
+			srcFile := filepath.Join(shippingConfDir, entry.Name())
+			destFile := filepath.Join(config.NginxConfDir(), entry.Name())
+			if _, err := os.Stat(destFile); os.IsNotExist(err) {
+				data, rErr := os.ReadFile(srcFile)
+				if rErr == nil {
+					_ = os.WriteFile(destFile, data, 0644)
+				}
+			}
+		}
+	}
+
+	// Always ensure fastcgi_params exists
+	fastcgiParamsPath := filepath.Join(config.NginxConfDir(), "fastcgi_params")
+	if _, err := os.Stat(fastcgiParamsPath); os.IsNotExist(err) {
+		fastcgiParams := `fastcgi_param  QUERY_STRING       $query_string;
+fastcgi_param  REQUEST_METHOD     $request_method;
+fastcgi_param  CONTENT_TYPE       $content_type;
+fastcgi_param  CONTENT_LENGTH     $content_length;
+
+fastcgi_param  SCRIPT_NAME        $fastcgi_script_name;
+fastcgi_param  REQUEST_URI        $request_uri;
+fastcgi_param  DOCUMENT_URI       $document_uri;
+fastcgi_param  DOCUMENT_ROOT      $document_root;
+fastcgi_param  SERVER_PROTOCOL    $server_protocol;
+fastcgi_param  REQUEST_SCHEME     $scheme;
+fastcgi_param  HTTPS              $https if_not_empty;
+
+fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;
+fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;
+
+fastcgi_param  REMOTE_ADDR        $remote_addr;
+fastcgi_param  REMOTE_PORT        $remote_port;
+fastcgi_param  SERVER_ADDR        $server_addr;
+fastcgi_param  SERVER_PORT        $server_port;
+fastcgi_param  SERVER_NAME        $server_name;
+
+# PHP only, required if PHP was built with --enable-force-cgi-redirect
+fastcgi_param  REDIRECT_STATUS    200;
+`
+		_ = os.WriteFile(fastcgiParamsPath, []byte(fastcgiParams), 0644)
+	}
 
 	content := fmt.Sprintf(`# TermWP Master Nginx Configuration
 worker_processes auto;
@@ -365,10 +421,15 @@ func (m *NginxManager) EnableSiteConfig(name string) error {
 	return nil
 }
 
+// PrefixDir returns the runtime directory of nginx to use as its working prefix (-p).
+func (m *NginxManager) PrefixDir() string {
+	return config.NginxRuntimeDir()
+}
+
 // TestConfig runs `nginx -t` to validate configuration syntax.
 func (m *NginxManager) TestConfig() error {
 	bin := m.GetBinaryPath()
-	cmd := exec.Command(bin, "-p", config.HomeDir(), "-c", m.MasterConfPath(), "-t")
+	cmd := exec.Command(bin, "-p", m.PrefixDir(), "-c", m.MasterConfPath(), "-t")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("nginx configuration test failed:\n%s", string(output))
@@ -395,12 +456,20 @@ func (m *NginxManager) Start() error {
 		return err
 	}
 
+	if err := m.EnsureMasterConfig(); err != nil {
+		return err
+	}
+
+	if err := m.TestConfig(); err != nil {
+		return err
+	}
+
 	bin := m.GetBinaryPath()
-	args := []string{"-p", config.HomeDir(), "-c", m.MasterConfPath()}
+	args := []string{"-p", m.PrefixDir(), "-c", m.MasterConfPath()}
 	stdoutLog := filepath.Join(config.LogsDir(), "nginx_stdout.log")
 	stderrLog := filepath.Join(config.LogsDir(), "nginx_stderr.log")
 
-	proc, err := system.SpawnBackgroundProcess(bin, args, config.HomeDir(), stdoutLog, stderrLog)
+	proc, err := system.SpawnBackgroundProcess(bin, args, m.PrefixDir(), stdoutLog, stderrLog)
 	if err != nil {
 		return fmt.Errorf("failed starting nginx: %w", err)
 	}
@@ -409,7 +478,15 @@ func (m *NginxManager) Start() error {
 	_ = system.WritePIDFile(m.PIDFilePath(), proc.Pid)
 
 	// Wait up to 3s for HTTP port to start listening
-	_ = system.WaitForPort(m.cfg.HTTPPort, 3*time.Second)
+	if !system.WaitForPort(m.cfg.HTTPPort, 3*time.Second) {
+		if !system.IsProcessRunning(proc.Pid) {
+			logContent, _ := os.ReadFile(stderrLog)
+			if len(logContent) == 0 {
+				logContent, _ = os.ReadFile(stdoutLog)
+			}
+			return fmt.Errorf("nginx failed to start (PID %d exited):\n%s", proc.Pid, string(logContent))
+		}
+	}
 	return nil
 }
 
@@ -420,7 +497,7 @@ func (m *NginxManager) Reload() error {
 	}
 
 	bin := m.GetBinaryPath()
-	cmd := exec.Command(bin, "-p", config.HomeDir(), "-s", "reload")
+	cmd := exec.Command(bin, "-p", m.PrefixDir(), "-c", m.MasterConfPath(), "-s", "reload")
 	return cmd.Run()
 }
 
@@ -441,7 +518,7 @@ func (m *NginxManager) Stop(force bool) (bool, error) {
 
 	bin := m.GetBinaryPath()
 	stopped, err := system.StopDaemon(pidFile, func() error {
-		cmd := exec.Command(bin, "-p", config.HomeDir(), "-s", "quit")
+		cmd := exec.Command(bin, "-p", m.PrefixDir(), "-c", m.MasterConfPath(), "-s", "quit")
 		return cmd.Run()
 	}, 5*time.Second)
 

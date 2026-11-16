@@ -47,6 +47,7 @@ func (d *Downloader) DownloadFile(url, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create download request: %w", err)
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TermWP/1.0")
 
 	if existingSize > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
@@ -63,6 +64,11 @@ func (d *Downloader) DownloadFile(url, destPath string) error {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		// Check Content-Type: if server returned text/html for a zip/tar archive, reject it as an error page!
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		if strings.HasPrefix(contentType, "text/html") && (strings.HasSuffix(destPath, ".zip") || strings.HasSuffix(destPath, ".tar.gz") || strings.HasSuffix(destPath, ".tgz")) {
+			return fmt.Errorf("server returned HTML page instead of archive (resource likely not found or invalid URL: %s)", url)
+		}
 		// Server doesn't support range or fresh download
 		existingSize = 0
 		totalSize = resp.ContentLength
@@ -73,9 +79,16 @@ func (d *Downloader) DownloadFile(url, destPath string) error {
 		out, err = os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	default:
 		// If windows.php.net returns 404, automatically try the archives directory
-		if resp.StatusCode == http.StatusNotFound && strings.Contains(url, "windows.php.net/downloads/releases/") && !strings.Contains(url, "/archives/") {
-			fallbackURL := strings.Replace(url, "/downloads/releases/", "/downloads/releases/archives/", 1)
-			return d.DownloadFile(fallbackURL, destPath)
+		if resp.StatusCode == http.StatusNotFound && strings.Contains(url, "windows.php.net/downloads/") && !strings.Contains(url, "/archives/") {
+			var fallbackURL string
+			if strings.Contains(url, "/releases/") {
+				fallbackURL = strings.Replace(url, "/downloads/releases/", "/downloads/releases/archives/", 1)
+			} else if strings.Contains(url, "/qa/") {
+				fallbackURL = strings.Replace(url, "/downloads/qa/", "/downloads/qa/archives/", 1)
+			}
+			if fallbackURL != "" {
+				return d.DownloadFile(fallbackURL, destPath)
+			}
 		}
 		return fmt.Errorf("server responded with status %d: %s", resp.StatusCode, resp.Status)
 	}
@@ -317,6 +330,7 @@ func (d *Downloader) FetchAndInstall(src *config.DownloadSource, destDir string)
 	switch src.ArchiveType {
 	case config.ArchiveZip:
 		if err := ExtractZip(cachePath, destDir, src.StripDirs); err != nil {
+			_ = os.Remove(cachePath) // Remove corrupted cache so retry doesn't reuse it
 			if d.tracker != nil {
 				d.tracker.Fail(fmt.Sprintf("Extraction failed for %s", src.Name))
 			}
@@ -324,6 +338,7 @@ func (d *Downloader) FetchAndInstall(src *config.DownloadSource, destDir string)
 		}
 	case config.ArchiveTarGz:
 		if err := ExtractTarGz(cachePath, destDir, src.StripDirs); err != nil {
+			_ = os.Remove(cachePath) // Remove corrupted cache so retry doesn't reuse it
 			if d.tracker != nil {
 				d.tracker.Fail(fmt.Sprintf("Extraction failed for %s", src.Name))
 			}

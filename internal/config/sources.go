@@ -195,9 +195,9 @@ var (
 		"8.5": {
 			"windows/amd64": {
 				Name:        "php-8.5",
-				Version:     "8.5.0-dev",
-				URL:         "https://windows.php.net/downloads/snaps/master/latest/php-master-nts-windows-vs17-x64.zip",
-				Filename:    "php-8.5-dev-nts-Win32-vs17-x64.zip",
+				Version:     "8.5.13RC1",
+				URL:         "https://windows.php.net/downloads/qa/php-8.5.13RC1-nts-Win32-vs17-x64.zip",
+				Filename:    "php-8.5.13RC1-nts-Win32-vs17-x64.zip",
 				ArchiveType: ArchiveZip,
 				StripDirs:   0,
 			},

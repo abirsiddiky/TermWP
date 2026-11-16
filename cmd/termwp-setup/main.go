@@ -110,11 +110,13 @@ func main() {
 	}
 
 	// PHP 8.3, 8.4, 8.5
+	phpMgr := termwpruntime.NewPHPManager(cfg)
 	for _, phpVer := range []string{"8.3", "8.4", "8.5"} {
 		if phpSrc, err := config.GetPHPSource(phpVer, runtime.GOOS, runtime.GOARCH); err == nil {
 			if err := dl.FetchAndInstall(phpSrc, config.PHPRuntimeDir(phpVer)); err != nil {
 				tracker.Fail(fmt.Sprintf("Failed installing PHP %s: %s", phpVer, err.Error()))
 			} else {
+				_ = phpMgr.EnsurePHPIni(phpVer)
 				tracker.Success(fmt.Sprintf("PHP %s installed", phpVer))
 			}
 		}

@@ -248,7 +248,14 @@ func (d *DoctorEngine) checkPHPExtensions() []CheckItem {
 			continue // Version not installed yet
 		}
 
-		cmd := exec.Command(cli, "-m")
+		iniPath := filepath.Join(config.PHPRuntimeDir(v), "php.ini")
+		var cmd *exec.Cmd
+		if _, err := os.Stat(iniPath); err == nil {
+			cmd = exec.Command(cli, "-c", iniPath, "-m")
+		} else {
+			cmd = exec.Command(cli, "-m")
+		}
+
 		out, err := cmd.Output()
 		if err != nil {
 			continue

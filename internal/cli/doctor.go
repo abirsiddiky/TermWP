@@ -2,10 +2,14 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 	"termwp/internal/config"
 	"termwp/internal/core"
+	termwpruntime "termwp/internal/runtime"
 	"termwp/internal/system"
 	"termwp/internal/ui"
 )
@@ -58,6 +62,16 @@ func executeDoctor(fix bool) error {
 	if fix {
 		fmt.Println(ui.FormatInfo("Auto-repair enabled: reconciling environment structure..."))
 		_ = config.EnsureDirectories()
+		phpMgr := termwpruntime.NewPHPManager(cfg)
+		for _, v := range []string{"8.3", "8.4", "8.5"} {
+			cli := filepath.Join(config.PHPRuntimeDir(v), "php.exe")
+			if runtime.GOOS != "windows" {
+				cli = filepath.Join(config.PHPRuntimeDir(v), "bin", "php")
+			}
+			if _, err := os.Stat(cli); err == nil {
+				_ = phpMgr.EnsurePHPIni(v)
+			}
+		}
 	}
 
 	engine := system.NewDoctorEngine(cfg)
