@@ -12,7 +12,7 @@ func TestDoctorEngine(t *testing.T) {
 	doc := NewDoctorEngine(cfg)
 
 	// Run diagnostics with simulated shutdown = true
-	items := doc.RunDiagnostics(true, []string{"8.4"})
+	items := doc.RunDiagnostics(true, true, []string{"8.4"})
 	if len(items) == 0 {
 		t.Fatalf("expected diagnostic items, got 0")
 	}

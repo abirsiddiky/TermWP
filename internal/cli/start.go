@@ -1,39 +1,40 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"termwp/internal/config"
 	"termwp/internal/core"
 	"termwp/internal/runtime"
 	"termwp/internal/ui"
 )
 
 var startCmd = &cobra.Command{
-	Use:    "start",
-	Short:  "Start all stack services needed for active sites",
-	Hidden: true, // Hidden utility command per requirements
-	Long: `Starts nginx, MariaDB, and required PHP backends for all currently active ('on') sites.
-Typically invoked automatically by commands like add, on, clone, or doctor, but can be called manually.`,
+	Use:   "start",
+	Short: "Start stack services and verify all enabled WordPress sites",
+	Long: `Starts MariaDB, nginx, and the PHP version backends needed by all enabled sites.
+Verifies each enabled site responds over HTTP/HTTPS, and prints a summary of site states.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return executeStartServices()
+		return executeStartServices(cmd.Context())
 	},
 }
 
-func executeStartServices() error {
+func executeStartServices(ctx context.Context) error {
 	store := core.GetStateStore()
-	hasActive, err := store.HasActiveSites()
+	enabledSites, err := store.GetEnabledSites()
 	if err != nil {
 		return fmt.Errorf("failed to query site state: %w", err)
 	}
 
-	if !hasActive {
-		fmt.Println(ui.FormatInfo("No active sites configured. Services not needed."))
+	if len(enabledSites) == 0 {
+		fmt.Println(ui.FormatInfo("No enabled sites configured. Start a site with: termwp on <site.local>"))
 		return nil
 	}
 
 	tracker := ui.NewStepTracker(false, verboseFlag)
-	tracker.Start("Starting stack services for active sites")
+	tracker.Start("Starting stack services for enabled sites")
 
 	// Clear shutdown flag when started
 	_ = store.SetShutdown(false)
@@ -44,6 +45,8 @@ func executeStartServices() error {
 		return err
 	}
 
+	cfg, _ := config.LoadConfig()
+
 	activeVersions, _ := store.GetActivePHPVersions()
 	if err := stack.EnsureStackRunning(activeVersions); err != nil {
 		tracker.Fail("Failed starting stack services")
@@ -51,5 +54,28 @@ func executeStartServices() error {
 	}
 
 	tracker.Success("All required stack services are running.")
+
+	// Verify each enabled site responds
+	statuses := core.CheckAllSitesStatusParallel(ctx, enabledSites, cfg, stack)
+
+	fmt.Println("\nSite status:")
+	for _, s := range enabledSites {
+		st := statuses[s.Name]
+		proto := "http"
+		port := cfg.HTTPPort
+		if s.SSL {
+			proto = "https"
+			port = cfg.HTTPSPort
+		}
+		urlStr := fmt.Sprintf("%s://%s", proto, s.Domain)
+		if (!s.SSL && port != 80) || (s.SSL && port != 443) {
+			urlStr = fmt.Sprintf("%s://%s:%d", proto, s.Domain, port)
+		}
+
+		formattedStatus := ui.FormatSiteStatus(st.State, st.Detail)
+		fmt.Printf("  • %-20s (%s) -> %s\n", s.Name, urlStr, formattedStatus)
+	}
+	fmt.Println()
+
 	return nil
 }

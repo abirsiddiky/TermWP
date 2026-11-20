@@ -57,6 +57,7 @@ func executeDoctor(fix bool) error {
 
 	store := core.GetStateStore()
 	isShutdown, _ := store.IsShutdown()
+	hasEnabled, _ := store.HasActiveSites()
 	activePHP, _ := store.GetActivePHPVersions()
 
 	if fix {
@@ -72,10 +73,17 @@ func executeDoctor(fix bool) error {
 				_ = phpMgr.EnsurePHPIni(v)
 			}
 		}
+
+		if hasEnabled {
+			stack, sErr := termwpruntime.GetStackManager()
+			if sErr == nil {
+				_ = stack.EnsureStackRunning(activePHP)
+			}
+		}
 	}
 
 	engine := system.NewDoctorEngine(cfg)
-	results := engine.RunDiagnostics(isShutdown, activePHP)
+	results := engine.RunDiagnostics(hasEnabled, isShutdown, activePHP)
 
 	fmt.Print(system.RenderDoctorChecklist(results))
 	return nil

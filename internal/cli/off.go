@@ -14,8 +14,8 @@ var offCmd = &cobra.Command{
 	Use:   "off <site.local>",
 	Short: "Turn off a site and disable its nginx routing",
 	Long: `Disables the site's nginx virtual host, removes its entry from the hosts file,
-and marks the site status as 'off' in state.json. Files and databases remain untouched.
-If no other active site requires a running PHP version or stack daemon, unused services can shut down.`,
+and marks the site as disabled (off). Files and databases remain untouched.
+If services are stopped, off works instantly without starting background services.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		siteName := strings.ToLower(args[0])
@@ -29,7 +29,7 @@ If no other active site requires a running PHP version or stack daemon, unused s
 			return fmt.Errorf("site '%s' not found", siteName)
 		}
 
-		if site.Status == core.StatusOff {
+		if !site.Enabled {
 			fmt.Println(ui.FormatInfo(fmt.Sprintf("Site '%s' is already off.", siteName)))
 			return nil
 		}

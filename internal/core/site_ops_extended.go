@@ -72,6 +72,12 @@ func AddSSLToSite(ctx context.Context, siteName string, tracker *ui.StepTracker)
 
 	// 3. Update WordPress URLs via WP-CLI
 	siteDir := config.SiteDir(site.Name)
+
+	// Ensure MariaDB and PHP are running for WP-CLI configuration updates
+	if err := stack.EnsureStackRunning([]string{site.PHPVersion}); err != nil {
+		tracker.Fail("Failed starting required stack services for SSL update")
+		return err
+	}
 	httpsPort := cfg.HTTPSPort
 	newURL := fmt.Sprintf("https://%s", site.Domain)
 	if httpsPort != 443 {
@@ -180,6 +186,12 @@ func CloneSite(ctx context.Context, sourceSite *Site, targetName string, tracker
 		return err
 	}
 
+	// Ensure MariaDB, PHP, and Nginx are running for the clone operation
+	if err := stack.EnsureStackRunning([]string{sourceSite.PHPVersion}); err != nil {
+		tracker.Fail("Failed starting required stack services for clone")
+		return err
+	}
+
 	rollback := NewRollbackStack()
 	defer func() {
 		rollback.Execute(tracker)
@@ -268,7 +280,7 @@ func CloneSite(ctx context.Context, sourceSite *Site, targetName string, tracker
 		Domain:     targetName,
 		PHPVersion: sourceSite.PHPVersion,
 		SSL:        sourceSite.SSL,
-		Status:     StatusOn,
+		Enabled:    sourceSite.Enabled,
 		DBName:     targetDB,
 		DBUser:     targetUser,
 		DBPass:     targetPass,
@@ -354,6 +366,12 @@ func UpdateSite(ctx context.Context, site *Site, plugins, themes, all bool, trac
 	}
 
 	siteDir := config.SiteDir(site.Name)
+
+	// Ensure MariaDB and PHP are running for update and backup
+	if err := stack.EnsureStackRunning([]string{site.PHPVersion}); err != nil {
+		tracker.Fail("Failed starting required stack services for update")
+		return err
+	}
 
 	// Step 1: Automatic safety backup of database
 	backupDir := config.SiteBackupsDir(site.Name)

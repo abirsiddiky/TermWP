@@ -43,7 +43,7 @@ func NewDoctorEngine(cfg *config.GlobalConfig) *DoctorEngine {
 }
 
 // RunDiagnostics executes the full diagnostic checklist.
-func (d *DoctorEngine) RunDiagnostics(isShutdown bool, activePHPVersions []string) []CheckItem {
+func (d *DoctorEngine) RunDiagnostics(hasEnabledSites, isShutdown bool, activePHPVersions []string) []CheckItem {
 	var results []CheckItem
 
 	// 1. Environment & Permissions
@@ -62,7 +62,7 @@ func (d *DoctorEngine) RunDiagnostics(isShutdown bool, activePHPVersions []strin
 	results = append(results, d.checkPortConflicts()...)
 
 	// 6. Stack Daemons & DB Connection
-	results = append(results, d.checkStackServices(isShutdown)...)
+	results = append(results, d.checkStackServices(hasEnabledSites, isShutdown, activePHPVersions)...)
 
 	// 7. Hosts File Sync
 	results = append(results, d.checkHostsFile()...)
@@ -329,16 +329,55 @@ func (d *DoctorEngine) checkPortConflicts() []CheckItem {
 	return items
 }
 
-func (d *DoctorEngine) checkStackServices(isShutdown bool) []CheckItem {
+func (d *DoctorEngine) checkStackServices(hasEnabledSites, isShutdown bool, activePHPVersions []string) []CheckItem {
 	var items []CheckItem
+
+	mariadbUp := !IsPortAvailable(d.cfg.MariaDBPort)
+	nginxUp := !IsPortAvailable(d.cfg.HTTPPort) || !IsPortAvailable(d.cfg.HTTPSPort)
+
+	phpUp := true
+	for _, v := range activePHPVersions {
+		phpPort := 9084
+		switch v {
+		case "8.3":
+			phpPort = 9083
+		case "8.4":
+			phpPort = 9084
+		case "8.5":
+			phpPort = 9085
+		}
+		if IsPortAvailable(phpPort) {
+			phpUp = false
+			break
+		}
+	}
+
+	allUp := mariadbUp && nginxUp && phpUp
 
 	if isShutdown {
 		items = append(items, CheckItem{
 			Category: "Daemons",
 			Name:     "Background Stack Daemons",
-			Level:    LevelPass,
+			Level:    LevelWarn,
 			Details:  "Services stopped (normal - 'termwp shutdown' was executed)",
-			FixHint:  "Services will automatically restart when a site command is executed",
+			FixHint:  "run: termwp start",
+			CanFix:   true,
+		})
+	} else if hasEnabledSites && !allUp {
+		items = append(items, CheckItem{
+			Category: "Daemons",
+			Name:     "Background Stack Daemons",
+			Level:    LevelWarn,
+			Details:  "Stack services are stopped while enabled WordPress sites exist",
+			FixHint:  "run: termwp start",
+			CanFix:   true,
+		})
+	} else if hasEnabledSites && allUp {
+		items = append(items, CheckItem{
+			Category: "Daemons",
+			Name:     "Background Stack Daemons",
+			Level:    LevelPass,
+			Details:  "All background daemons for enabled sites are running",
 		})
 	}
 

@@ -19,13 +19,15 @@ type ServiceStatus struct {
 
 // SiteRow represents a site item displayed in the show table.
 type SiteRow struct {
-	Name       string    `json:"name"`
-	Domain     string    `json:"domain"`
-	PHPVersion string    `json:"php_version"`
-	SSL        bool      `json:"ssl"`
-	Status     string    `json:"status"` // "on" or "off"
-	DBName     string    `json:"db_name"`
-	CreatedAt  time.Time `json:"created_at"`
+	Name         string    `json:"name"`
+	Domain       string    `json:"domain"`
+	PHPVersion   string    `json:"php_version"`
+	SSL          bool      `json:"ssl"`
+	Enabled      bool      `json:"enabled"`
+	Status       string    `json:"status"` // "running", "stopped", "off"
+	StatusDetail string    `json:"status_detail,omitempty"`
+	DBName       string    `json:"db_name"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // RenderServiceHeader returns a styled summary banner of active services.
@@ -57,6 +59,41 @@ func RenderServiceHeader(status ServiceStatus) string {
 		Render(header)
 }
 
+// FormatSiteStatus formats the status column with bullet indicators.
+func FormatSiteStatus(state, detail string) string {
+	stateLower := strings.ToLower(state)
+	if NoColor {
+		switch stateLower {
+		case "running", "on":
+			return "[running]"
+		case "stopped":
+			if detail != "" {
+				return fmt.Sprintf("[stopped (%s)]", detail)
+			}
+			return "[stopped]"
+		case "off":
+			return "[off]"
+		default:
+			return fmt.Sprintf("[%s]", state)
+		}
+	}
+
+	switch stateLower {
+	case "running", "on":
+		return SuccessStyle.Render("● running")
+	case "stopped":
+		dotText := WarningStyle.Render("● stopped")
+		if detail != "" {
+			return fmt.Sprintf("%s %s", dotText, MutedStyle.Render(fmt.Sprintf("(%s)", detail)))
+		}
+		return dotText
+	case "off":
+		return DangerStyle.Render("● off")
+	default:
+		return MutedStyle.Render(fmt.Sprintf("● %s", state))
+	}
+}
+
 // RenderSitesTable renders the sites table using lipgloss.
 func RenderSitesTable(sites []SiteRow, cfg *config.GlobalConfig) string {
 	if len(sites) == 0 {
@@ -84,10 +121,7 @@ func RenderSitesTable(sites []SiteRow, cfg *config.GlobalConfig) string {
 			sslStr = "Yes (mkcert)"
 		}
 
-		statusStr := "🔴 off"
-		if s.Status == "on" {
-			statusStr = "🟢 on"
-		}
+		statusStr := FormatSiteStatus(s.Status, s.StatusDetail)
 
 		createdStr := s.CreatedAt.Format("2006-01-02 15:04")
 		if s.CreatedAt.IsZero() {
@@ -126,7 +160,8 @@ func RenderSitesTable(sites []SiteRow, cfg *config.GlobalConfig) string {
 				return lipgloss.NewStyle().
 					Foreground(ColorSecondary).
 					Padding(0, 1)
-			case col == 4: // Status column
+			case col == 4:
+				// STATUS column
 				return lipgloss.NewStyle().
 					Padding(0, 1)
 			default:

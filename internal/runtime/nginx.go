@@ -474,18 +474,12 @@ func (m *NginxManager) Start() error {
 		return fmt.Errorf("failed starting nginx: %w", err)
 	}
 
-	// Record PID
-	_ = system.WritePIDFile(m.PIDFilePath(), proc.Pid)
-
 	// Wait up to 3s for HTTP port to start listening
-	if !system.WaitForPort(m.cfg.HTTPPort, 3*time.Second) {
-		if !system.IsProcessRunning(proc.Pid) {
-			logContent, _ := os.ReadFile(stderrLog)
-			if len(logContent) == 0 {
-				logContent, _ = os.ReadFile(stdoutLog)
-			}
-			return fmt.Errorf("nginx failed to start (PID %d exited):\n%s", proc.Pid, string(logContent))
-		}
+	_ = system.WaitForPort(m.cfg.HTTPPort, 3*time.Second)
+
+	// If nginx didn't write its own PID file from nginx.conf, record proc.Pid
+	if system.ReadPIDFile(m.PIDFilePath()) <= 0 {
+		_ = system.WritePIDFile(m.PIDFilePath(), proc.Pid)
 	}
 	return nil
 }

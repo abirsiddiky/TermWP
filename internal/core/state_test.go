@@ -45,7 +45,7 @@ func TestStateStoreLifecycle(t *testing.T) {
 		Domain:     "blog.local",
 		PHPVersion: "8.4",
 		SSL:        false,
-		Status:     StatusOn,
+		Enabled:    true,
 		DBName:     "wp_blog_local",
 		DBUser:     "user_blog",
 		DBPass:     "secretpass123",
@@ -68,15 +68,27 @@ func TestStateStoreLifecycle(t *testing.T) {
 	if retrieved.DBName != "wp_blog_local" {
 		t.Errorf("DBName mismatch: got %s, want wp_blog_local", retrieved.DBName)
 	}
+	if !retrieved.Enabled {
+		t.Errorf("expected Enabled to be true")
+	}
 
-	// 5. Update site status
+	// 5. Update site enabled / status
 	if err := store.SetSiteStatus("blog.local", StatusOff); err != nil {
 		t.Fatalf("SetSiteStatus failed: %v", err)
 	}
 
 	retrieved, _ = store.GetSite("blog.local")
-	if retrieved.Status != StatusOff {
-		t.Errorf("expected status %s, got %s", StatusOff, retrieved.Status)
+	if retrieved.Enabled != false {
+		t.Errorf("expected Enabled to be false after SetSiteStatus(StatusOff)")
+	}
+
+	if err := store.SetSiteEnabled("blog.local", true); err != nil {
+		t.Fatalf("SetSiteEnabled failed: %v", err)
+	}
+
+	retrieved, _ = store.GetSite("blog.local")
+	if retrieved.Enabled != true {
+		t.Errorf("expected Enabled to be true after SetSiteEnabled(true)")
 	}
 
 	// 6. Test shutdown state
@@ -100,8 +112,9 @@ func TestStateStoreLifecycle(t *testing.T) {
 	if err := store.DeleteSite("blog.local"); err != nil {
 		t.Fatalf("DeleteSite failed: %v", err)
 	}
+
 	_, err = store.GetSite("blog.local")
 	if err == nil {
-		t.Errorf("expected GetSite to fail after deletion")
+		t.Errorf("expected GetSite to return error after deletion, but got nil")
 	}
 }

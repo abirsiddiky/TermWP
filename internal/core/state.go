@@ -15,8 +15,12 @@ import (
 )
 
 const (
-	StatusOn  = "on"
-	StatusOff = "off"
+	StatusRunning = "running"
+	StatusStopped = "stopped"
+	StatusOff     = "off"
+
+	// Legacy status constants retained for backward compatibility
+	StatusOn = "on"
 )
 
 // Site represents a single registered WordPress site.
@@ -25,7 +29,8 @@ type Site struct {
 	Domain     string    `json:"domain"`
 	PHPVersion string    `json:"php_version"`
 	SSL        bool      `json:"ssl"`
-	Status     string    `json:"status"` // "on" or "off"
+	Enabled    bool      `json:"enabled"`
+	Status     string    `json:"status,omitempty"` // Migrated on load; live computed at runtime, never persisted
 	DBName     string    `json:"db_name"`
 	DBUser     string    `json:"db_user"`
 	DBPass     string    `json:"db_pass"`
@@ -151,11 +156,28 @@ func (s *StateStore) readStateUnlocked() (*State, error) {
 	if st.Sites == nil {
 		st.Sites = make(map[string]*Site)
 	}
+
+	// Backward compatibility migration:
+	// If legacy state.json had `status: "on"` and `enabled` was not set, migrate to `enabled: true`.
+	// Clear the persisted status field so live runtime status is always computed dynamically.
+	for _, site := range st.Sites {
+		if !site.Enabled && strings.EqualFold(site.Status, StatusOn) {
+			site.Enabled = true
+		}
+		site.Status = ""
+	}
+
 	return &st, nil
 }
 
 func (s *StateStore) writeStateUnlocked(st *State) error {
 	st.LastUpdated = time.Now()
+
+	// Ensure runtime status is never stored on disk
+	for _, site := range st.Sites {
+		site.Status = ""
+	}
+
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to serialize state: %w", err)
@@ -209,6 +231,27 @@ func (s *StateStore) ListSites() ([]*Site, error) {
 	return sites, nil
 }
 
+// GetEnabledSites returns all sites marked as enabled by the user.
+func (s *StateStore) GetEnabledSites() ([]*Site, error) {
+	st, err := s.ReadState(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var enabled []*Site
+	for _, site := range st.Sites {
+		if site.Enabled {
+			enabled = append(enabled, site)
+		}
+	}
+
+	sort.Slice(enabled, func(i, j int) bool {
+		return enabled[i].Name < enabled[j].Name
+	})
+
+	return enabled, nil
+}
+
 // AddSite registers a new site. Returns an error if it already exists.
 func (s *StateStore) AddSite(site *Site) error {
 	return s.WithLock(nil, func(st *State) error {
@@ -220,6 +263,7 @@ func (s *StateStore) AddSite(site *Site) error {
 			site.CreatedAt = time.Now()
 		}
 		site.UpdatedAt = time.Now()
+		site.Status = ""
 		st.Sites[key] = site
 		return nil
 	})
@@ -233,6 +277,7 @@ func (s *StateStore) UpdateSite(site *Site) error {
 			return fmt.Errorf("site '%s' does not exist", site.Name)
 		}
 		site.UpdatedAt = time.Now()
+		site.Status = ""
 		st.Sites[key] = site
 		return nil
 	})
@@ -250,18 +295,25 @@ func (s *StateStore) DeleteSite(name string) error {
 	})
 }
 
-// SetSiteStatus changes a site's status to "on" or "off".
-func (s *StateStore) SetSiteStatus(name string, status string) error {
+// SetSiteEnabled updates a site's enabled state.
+func (s *StateStore) SetSiteEnabled(name string, enabled bool) error {
 	return s.WithLock(nil, func(st *State) error {
 		key := strings.ToLower(name)
 		site, exists := st.Sites[key]
 		if !exists {
 			return fmt.Errorf("site '%s' does not exist", name)
 		}
-		site.Status = status
+		site.Enabled = enabled
+		site.Status = ""
 		site.UpdatedAt = time.Now()
 		return nil
 	})
+}
+
+// SetSiteStatus changes a site's enabled state using "on" / "off" string for backward compatibility.
+func (s *StateStore) SetSiteStatus(name string, status string) error {
+	enabled := strings.EqualFold(status, StatusOn) || strings.EqualFold(status, StatusRunning)
+	return s.SetSiteEnabled(name, enabled)
 }
 
 // SetShutdown records whether TermWP is currently shutdown.
@@ -282,7 +334,7 @@ func (s *StateStore) IsShutdown() (bool, error) {
 }
 
 // GetActivePHPVersions returns a sorted deduplicated slice of PHP versions
-// used by active ("on") sites.
+// used by active (enabled) sites.
 func (s *StateStore) GetActivePHPVersions() ([]string, error) {
 	st, err := s.ReadState(nil)
 	if err != nil {
@@ -291,7 +343,7 @@ func (s *StateStore) GetActivePHPVersions() ([]string, error) {
 
 	seen := make(map[string]bool)
 	for _, site := range st.Sites {
-		if site.Status == StatusOn && site.PHPVersion != "" {
+		if site.Enabled && site.PHPVersion != "" {
 			seen[site.PHPVersion] = true
 		}
 	}
@@ -304,14 +356,14 @@ func (s *StateStore) GetActivePHPVersions() ([]string, error) {
 	return versions, nil
 }
 
-// HasActiveSites returns true if any site is currently "on".
+// HasActiveSites returns true if any site is currently enabled.
 func (s *StateStore) HasActiveSites() (bool, error) {
 	st, err := s.ReadState(nil)
 	if err != nil {
 		return false, err
 	}
 	for _, site := range st.Sites {
-		if site.Status == StatusOn {
+		if site.Enabled {
 			return true, nil
 		}
 	}

@@ -52,15 +52,23 @@ var (
 			Foreground(ColorSecondary)
 
 	// Status Badges
-	StatusOnBadge = lipgloss.NewStyle().
+	StatusRunningBadge = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(ColorSuccess).
-			SetString("🟢 on")
+			SetString("● running")
+
+	StatusStoppedBadge = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(ColorWarning).
+			SetString("● stopped")
 
 	StatusOffBadge = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(ColorDanger).
-			SetString("🔴 off")
+			SetString("● off")
+
+	// Backward-compatible alias
+	StatusOnBadge = StatusRunningBadge
 
 	// Service running badges
 	ServiceRunningBadge = lipgloss.NewStyle().
@@ -92,8 +100,10 @@ func SetNoColor(disabled bool) {
 		MutedStyle = lipgloss.NewStyle()
 		HighlightStyle = lipgloss.NewStyle()
 		CardStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).Margin(1, 0)
-		StatusOnBadge = lipgloss.NewStyle().SetString("[ON]")
+		StatusRunningBadge = lipgloss.NewStyle().SetString("[RUNNING]")
+		StatusStoppedBadge = lipgloss.NewStyle().SetString("[STOPPED]")
 		StatusOffBadge = lipgloss.NewStyle().SetString("[OFF]")
+		StatusOnBadge = lipgloss.NewStyle().SetString("[RUNNING]")
 	}
 }
 

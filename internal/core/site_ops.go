@@ -116,7 +116,7 @@ func CreateSite(ctx context.Context, p CreateSiteParams, tracker *ui.StepTracker
 		Domain:     p.SiteName,
 		PHPVersion: p.PHPVersion,
 		SSL:        p.SSL,
-		Status:     StatusOn,
+		Enabled:    true,
 		DBName:     dbName,
 		DBUser:     dbUser,
 		DBPass:     dbPass,
@@ -183,6 +183,9 @@ func CreateSite(ctx context.Context, p CreateSiteParams, tracker *ui.StepTracker
 		return store.DeleteSite(p.SiteName)
 	})
 
+	// Clear shutdown flag
+	_ = store.SetShutdown(false)
+
 	// Transaction succeeded: discard rollback
 	rollback.Discard()
 
@@ -245,8 +248,10 @@ func DeleteSite(ctx context.Context, siteName string, tracker *ui.StepTracker) e
 		return err
 	}
 
-	// 7. Reload Nginx
-	_ = stack.Nginx.Reload()
+	// 7. Reload Nginx if running
+	if stack.Nginx.IsRunning() {
+		_ = stack.Nginx.Reload()
+	}
 
 	// 8. If no other active site uses this PHP version, stop it
 	activeVersions, _ := store.GetActivePHPVersions()
@@ -257,7 +262,7 @@ func DeleteSite(ctx context.Context, siteName string, tracker *ui.StepTracker) e
 			break
 		}
 	}
-	if !stillUsed && site.PHPVersion != "" {
+	if !stillUsed && site.PHPVersion != "" && stack.PHP.IsPHPRunning(site.PHPVersion) {
 		_, _ = stack.PHP.StopPHP(site.PHPVersion, false)
 	}
 
@@ -266,6 +271,7 @@ func DeleteSite(ctx context.Context, siteName string, tracker *ui.StepTracker) e
 }
 
 // TurnOffSite deactivates a site by disabling nginx conf and removing hosts entry.
+// If services are stopped, off works instantly without starting background services.
 func TurnOffSite(ctx context.Context, site *Site, tracker *ui.StepTracker) error {
 	stack, err := runtime.GetStackManager()
 	if err != nil {
@@ -275,24 +281,24 @@ func TurnOffSite(ctx context.Context, site *Site, tracker *ui.StepTracker) error
 	store := GetStateStore()
 
 	tracker.Start(fmt.Sprintf("Disabling nginx virtual host for '%s'", site.Name))
-	if err := stack.Nginx.DisableSiteConfig(site.Name); err != nil {
-		tracker.Fail("Failed disabling nginx config")
-		return err
-	}
+	_ = stack.Nginx.DisableSiteConfig(site.Name)
 
 	tracker.Start(fmt.Sprintf("Removing '%s' from hosts file", site.Name))
 	if err := system.RemoveHostsEntry(site.Name); err != nil {
 		tracker.Warn("Hosts entry could not be removed automatically")
 	}
 
-	if err := store.SetSiteStatus(site.Name, StatusOff); err != nil {
+	if err := store.SetSiteEnabled(site.Name, false); err != nil {
 		tracker.Fail("Failed updating site status")
 		return err
 	}
 
-	_ = stack.Nginx.Reload()
+	// Only reload Nginx if Nginx is actually running
+	if stack.Nginx.IsRunning() {
+		_ = stack.Nginx.Reload()
+	}
 
-	// Stop PHP backend if no other active site uses it
+	// Stop PHP backend if no other active site uses it and it is currently running
 	activeVersions, _ := store.GetActivePHPVersions()
 	stillUsed := false
 	for _, v := range activeVersions {
@@ -301,7 +307,7 @@ func TurnOffSite(ctx context.Context, site *Site, tracker *ui.StepTracker) error
 			break
 		}
 	}
-	if !stillUsed && site.PHPVersion != "" {
+	if !stillUsed && site.PHPVersion != "" && stack.PHP.IsPHPRunning(site.PHPVersion) {
 		_, _ = stack.PHP.StopPHP(site.PHPVersion, false)
 	}
 
@@ -309,7 +315,7 @@ func TurnOffSite(ctx context.Context, site *Site, tracker *ui.StepTracker) error
 	return nil
 }
 
-// TurnOnSite restores an inactive site.
+// TurnOnSite restores an inactive site, starts needed services, and verifies it responds.
 func TurnOnSite(ctx context.Context, site *Site, tracker *ui.StepTracker) error {
 	stack, err := runtime.GetStackManager()
 	if err != nil {
@@ -318,9 +324,19 @@ func TurnOnSite(ctx context.Context, site *Site, tracker *ui.StepTracker) error 
 
 	store := GetStateStore()
 
+	// 1. Mark enabled in state
+	if err := store.SetSiteEnabled(site.Name, true); err != nil {
+		tracker.Fail("Failed updating site state")
+		return err
+	}
+	site.Enabled = true
+
+	// Clear shutdown flag
+	_ = store.SetShutdown(false)
+
+	// 2. Restore Nginx configuration
 	tracker.Start(fmt.Sprintf("Restoring virtual host for '%s'", site.Name))
 	if err := stack.Nginx.EnableSiteConfig(site.Name); err != nil {
-		// If enabled file was missing, rewrite it
 		phpPort := stack.PHP.GetPort(site.PHPVersion)
 		if writeErr := stack.Nginx.WriteSiteConfig(site.Name, site.Domain, site.SSL, phpPort); writeErr != nil {
 			tracker.Fail("Failed enabling virtual host")
@@ -328,25 +344,55 @@ func TurnOnSite(ctx context.Context, site *Site, tracker *ui.StepTracker) error 
 		}
 	}
 
+	// 3. Sync hosts entry
 	tracker.Start(fmt.Sprintf("Adding '%s' to hosts file", site.Name))
 	if err := system.AddHostsEntry(site.Name, "127.0.0.1"); err != nil {
 		tracker.Fail("Failed updating hosts file")
 		return err
 	}
 
-	if err := store.SetSiteStatus(site.Name, StatusOn); err != nil {
-		tracker.Fail("Failed updating site status")
-		return err
-	}
-
-	// Ensure background daemons needed are active
+	// 4. Ensure background services needed by this site are running
+	// (Only starts MariaDB, Nginx, and this site's PHP version)
+	tracker.Start(fmt.Sprintf("Starting services (MariaDB, PHP %s, nginx)", site.PHPVersion))
 	if err := stack.EnsureStackRunning([]string{site.PHPVersion}); err != nil {
 		tracker.Fail("Failed starting stack services")
 		return err
 	}
 
-	_ = stack.Nginx.Reload()
+	// 5. Reload Nginx
+	if err := stack.Nginx.Reload(); err != nil {
+		tracker.Warn(fmt.Sprintf("Nginx reload warning: %v", err))
+	}
 
-	tracker.Success(fmt.Sprintf("Site '%s' is now on", site.Name))
+	// 6. Verify the site responds
+	tracker.Start("Verifying site responsiveness")
+	cfg, _ := config.LoadConfig()
+	var liveStatus SiteLiveStatus
+	for i := 0; i < 6; i++ {
+		liveStatus = CheckSiteStatus(ctx, site, cfg, stack)
+		if liveStatus.State == StatusRunning {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	siteURL := fmt.Sprintf("http://%s", site.Domain)
+	if site.SSL {
+		siteURL = fmt.Sprintf("https://%s", site.Domain)
+	}
+	if cfg != nil {
+		if !site.SSL && cfg.HTTPPort != 80 {
+			siteURL = fmt.Sprintf("http://%s:%d", site.Domain, cfg.HTTPPort)
+		} else if site.SSL && cfg.HTTPSPort != 443 {
+			siteURL = fmt.Sprintf("https://%s:%d", site.Domain, cfg.HTTPSPort)
+		}
+	}
+
+	if liveStatus.State == StatusRunning {
+		tracker.Success(fmt.Sprintf("Site '%s' started. Reachable at %s", site.Name, siteURL))
+	} else {
+		tracker.Warn(fmt.Sprintf("Site '%s' started, but probe reported: %s (%s)", site.Name, liveStatus.State, liveStatus.Detail))
+	}
+
 	return nil
 }
